@@ -13,27 +13,22 @@ import (
 type PostgresConfiguration struct {
 	Options        *PostgresOptions
 	Settings       *PostgresSettings
+	Connection     *DatabaseConnection
 	Script         string
 	ContainerImage string
 	JobName        string
 	Timestamp      string
 	Initiator      string
+	Envs           map[string]string
 }
 
 var scriptTemplate string = `
-  psql postgresql://{{ .Settings.Connection.Username }}:{{ .Settings.Connection.Password }}@{{ .Settings.Connection.Host }}:{{ .Settings.Connection.Port }} <<EOF
-  {{ if not .Options.NoUser }}
-  CREATE USER {{ if .Options.UserIfNotExists }} \
-    IF NOT EXISTS {{ end }} {{ .Settings.Username }} \
-    WITH PASSWORD '{{ .Settings.Password }}';
-  {{ end }}
-  CREATE DATABASE {{ if .Options.DatabaseIfNotExists }} \
-    IF NOT EXISTS {{ end }} {{ .Settings.Database }} \
-    {{ if not .Options.NoUser }} WITH OWNER {{ end }} \
-    ENCODING '{{ .Options.Encoding }}' \
-    LC_COLLATE = '{{ .Options.Collation }}' \
-    LC_CTYPE = '{{ .Options.ComparisonType }}';
-	EOF
+		psql {{ if .Connection.Url }} {{ .Connection.Url }} {{ else }} postgresql://{{ .Connection.Username }}:{{ .Connection.Password }}@{{ .Connection.Host }}:{{ .Connection.Port }} {{ end }}<<EOF
+		{{- if not .Options.NoUser }}
+		CREATE USER {{ if .Options.UserIfNotExists }}IF NOT EXISTS{{ end }}{{ .Settings.Username }} WITH PASSWORD '{{ .Settings.Password }}';
+		{{- end }}
+		CREATE DATABASE{{ if .Options.DatabaseIfNotExists }} IF NOT EXISTS {{ end }}{{ .Settings.Database }}{{ if not .Options.NoUser }} WITH OWNER {{ end }}ENCODING '{{ .Options.Encoding }}'LC_COLLATE = '{{ .Options.Collation }}' LC_CTYPE = '{{ .Options.ComparisonType }}';
+		EOF
 `
 
 var jobSpec string = `
@@ -42,8 +37,8 @@ kind: Job
 metadata:
   name: {{ .JobName }}
   annotations:
-    timestamp: {{ .Timestamp }}
-    initator: {{ .Initiator }}
+    timestamp: "{{ .Timestamp }}"
+    initator: "{{ .Initiator }}"
 spec:
   ttlSecondsAfterFinished: 100
   template:
@@ -54,7 +49,7 @@ spec:
         command: 
           - /bin/sh
           - -c 
-          - {{ .Script }}
+          - | {{ .Script }}
         env:
           {{ range $key, $value := .Envs }}
           - key: {{ $key }}
@@ -87,10 +82,10 @@ type PostgresSettings struct {
 }
 
 var (
-	Database            string
+	PostgresDatabase    string
+	PostgresUsername    string
+	PostgresPassword    string
 	DatabaseVersion     string
-	Username            string
-	Password            string
 	Encoding            string
 	Collation           string
 	ComparisonType      string
@@ -102,8 +97,22 @@ var (
 		Short: "Creates a new postgres database",
 		Long:  "Templates a kubernetes job that creates a new postgres database",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			var connection DatabaseConnection
+			if len(Url) > 0 {
+				connection = DatabaseConnection{
+					Url: Url,
+				}
+			} else {
+				connection = DatabaseConnection{
+					Username: ConnectionUsername,
+					Password: ConnectionPassword,
+					Host:     Host,
+					Port:     Port,
+				}
+			}
 
 			config := PostgresConfiguration{
+				Connection: &connection,
 				Options: &PostgresOptions{
 					Encoding:            Encoding,
 					Collation:           Collation,
@@ -113,11 +122,11 @@ var (
 					NoUser:              NoUser,
 				},
 				Settings: &PostgresSettings{
-					Database: Database,
-					Username: Username,
-					Password: Password,
+					Database: PostgresDatabase,
+					Username: PostgresUsername,
+					Password: PostgresPassword,
 				},
-				JobName:        fmt.Sprintf("concierge-%s-create-%s", "postgres", Database),
+				JobName:        fmt.Sprintf("concierge-%s-create-%s", "postgres", PostgresDatabase),
 				ContainerImage: fmt.Sprintf("postgres:%s", DatabaseVersion),
 				Timestamp:      time.Now().UTC().String(),
 				Script:         "",
@@ -149,14 +158,14 @@ var (
 
 func init() {
 	createCmd.AddCommand(postgresCmd)
-	createCmd.Flags().StringVarP(&Database, "database", "d", "", "Database name to create")
-	createCmd.Flags().StringVarP(&Username, "username", "u", "", "Username of user to create")
-	createCmd.Flags().StringVarP(&Password, "password", "p", "", "Password of user to create")
-	createCmd.Flags().StringVarP(&Collation, "encoding", "", "UTF8", "Database encoding, psql ENCODING")
-	createCmd.Flags().StringVarP(&Collation, "collation", "", "en_US.UTF-8", "Database collation, psql LC_COLLATE")
-	createCmd.Flags().StringVarP(&ComparisonType, "comparsion", "lc-type", "en_US.UTF-8", "Database comparison type, psql LC_TYPE flag")
-	createCmd.Flags().BoolVarP(&UserIfNotExists, "user.if-not-exists", "", false, "Query predicate IF NOT EXISTS for CREATE USER query")
-	createCmd.Flags().BoolVarP(&DatabaseIfNotExists, "database.if-not-exists", "", false, "Query predicate IF NOT EXISTS for CREATE DATABASE query")
-	createCmd.Flags().StringVarP(&DatabaseVersion, "database-version", "", "latest", "Database version to interact with. Keep this matching with your upstream database")
-	createCmd.Flags().BoolVarP(&NoUser, "no-user", "", false, "Skips user creation and only creates a database")
+	postgresCmd.Flags().StringVarP(&PostgresDatabase, "database", "d", "", "Database name to create")
+	postgresCmd.Flags().StringVarP(&PostgresUsername, "username", "u", "", "Username of user to create")
+	postgresCmd.Flags().StringVarP(&PostgresPassword, "password", "p", "", "Password of user to create")
+	postgresCmd.Flags().StringVar(&Collation, "encoding", "UTF8", "Database encoding, psql ENCODING")
+	postgresCmd.Flags().StringVar(&Collation, "collation", "en_US.UTF-8", "Database collation, psql LC_COLLATE")
+	postgresCmd.Flags().StringVar(&ComparisonType, "comparison", "en_US.UTF-8", "Database comparison type, psql LC_TYPE flag")
+	postgresCmd.Flags().BoolVar(&UserIfNotExists, "user-if-not-exists", false, "Query predicate IF NOT EXISTS for CREATE USER query")
+	postgresCmd.Flags().BoolVar(&DatabaseIfNotExists, "database-if-not-exists", false, "Query predicate IF NOT EXISTS for CREATE DATABASE query")
+	postgresCmd.Flags().StringVar(&DatabaseVersion, "database-version", "latest", "Database version to interact with. Keep this matching with your upstream database")
+	postgresCmd.Flags().BoolVar(&NoUser, "no-user", false, "Skips user creation and only creates a database")
 }
